@@ -398,7 +398,7 @@ function ifs_pms_enqueue_assets( $hook ) {
 } 
 
 /** 
- * 5. PRG Form Post Handlers (Full CRUD with Immutable Auditing) 
+ * 5. PRG Form Post Handlers (Full Complete CRUD with Tickets, Staff, Expenses, Settings) 
  */ 
 add_action( 'admin_init', 'ifs_pms_handle_form_submissions' ); 
 
@@ -418,57 +418,6 @@ function ifs_pms_handle_form_submissions() {
 
     $action = isset( $_POST['ifs_pms_action'] ) ? sanitize_key( wp_unslash( $_POST['ifs_pms_action'] ) ) : ''; 
     $base   = admin_url( 'admin.php?page=ifs-pms' ); 
-
-    // --- STAFF CRUD --- 
-    if ( 'create_staff' === $action ) { 
-        if ( ! current_user_can( 'manage_options' ) ) { 
-            wp_die( esc_html__( 'Forbidden: Administrator privileges required.', 'swimming-pool-manager' ), 403 ); 
-        } 
-
-        $username = isset( $_POST['user_login'] ) ? sanitize_user( wp_unslash( $_POST['user_login'] ) ) : ''; 
-        $email    = isset( $_POST['user_email'] ) ? sanitize_email( wp_unslash( $_POST['user_email'] ) ) : ''; 
-        $password = isset( $_POST['user_pass'] ) ? trim( (string) wp_unslash( $_POST['user_pass'] ) ) : ''; 
-        $fullname = isset( $_POST['display_name'] ) ? sanitize_text_field( wp_unslash( $_POST['display_name'] ) ) : ''; 
-
-        $requested_role = isset( $_POST['user_role'] ) ? sanitize_key( wp_unslash( $_POST['user_role'] ) ) : 'ifs_cashier'; 
-        $allowed_roles  = array( 'ifs_cashier', 'administrator' ); 
-        $role           = in_array( $requested_role, $allowed_roles, true ) ? $requested_role : 'ifs_cashier'; 
-
-        $base_sal = isset( $_POST['base_salary'] ) ? floatval( wp_unslash( $_POST['base_salary'] ) ) : 0.00; 
-        $allow    = isset( $_POST['allowance'] ) ? floatval( wp_unslash( $_POST['allowance'] ) ) : 0.00; 
-        $freq     = isset( $_POST['pay_frequency'] ) ? sanitize_text_field( wp_unslash( $_POST['pay_frequency'] ) ) : 'Monthly'; 
-        $eff_date = isset( $_POST['effective_date'] ) ? sanitize_text_field( wp_unslash( $_POST['effective_date'] ) ) : current_time( 'Y-m-d' ); 
-
-        if ( ! empty( $username ) && is_email( $email ) && ! empty( $password ) ) { 
-            $user_id = wp_create_user( $username, $password, $email ); 
-            if ( ! is_wp_error( $user_id ) ) { 
-                wp_update_user( array( 
-                    'ID'           => $user_id, 
-                    'display_name' => $fullname ? $fullname : $username, 
-                    'role'         => $role, 
-                ) ); 
-
-                $wpdb->insert( 
-                    $t_salary, 
-                    array( 
-                        'user_id'        => $user_id, 
-                        'base_salary'    => $base_sal, 
-                        'allowance'      => $allow, 
-                        'pay_frequency'  => $freq, 
-                        'effective_date' => $eff_date, 
-                        'status'         => 'Active', 
-                    ), 
-                    array( '%d', '%f', '%f', '%s', '%s', '%s' ) 
-                ); 
-
-                ifs_pms_record_audit( 'create_staff', $username, "Provisioned ID {$user_id} with role {$role}" ); 
-                wp_safe_redirect( add_query_arg( array( 'view' => 'staff', 'msg' => 'staff_created', 'tab' => 'list' ), $base ) ); 
-                exit; 
-            } 
-        } 
-        wp_safe_redirect( add_query_arg( array( 'view' => 'staff', 'msg' => 'error', 'tab' => 'add' ), $base ) ); 
-        exit; 
-    } 
 
     // --- ISSUE TICKET --- 
     if ( 'issue_ticket' === $action ) { 
@@ -556,6 +505,111 @@ function ifs_pms_handle_form_submissions() {
                 exit; 
             } 
         } 
+    } 
+
+    // --- EDIT TICKET --- 
+    if ( 'edit_ticket' === $action ) { 
+        if ( ! current_user_can( 'ifs_sell_tickets' ) && ! current_user_can( 'manage_options' ) ) { 
+            wp_die( esc_html__( 'Forbidden: Insufficient privileges.', 'swimming-pool-manager' ), 403 ); 
+        } 
+
+        $ticket_id = isset( $_POST['ticket_id'] ) ? absint( wp_unslash( $_POST['ticket_id'] ) ) : 0; 
+        $name      = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : ''; 
+        $phone     = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : ''; 
+        $room_no   = isset( $_POST['room_no'] ) ? sanitize_text_field( wp_unslash( $_POST['room_no'] ) ) : ''; 
+        $amount    = isset( $_POST['amount'] ) ? max( 0.00, floatval( wp_unslash( $_POST['amount'] ) ) ) : 0.00; 
+
+        $requested_status = isset( $_POST['status'] ) ? sanitize_key( wp_unslash( $_POST['status'] ) ) : 'Valid'; 
+        $allowed_statuses = array( 'Valid', 'Used', 'Completed', 'Cancelled' ); 
+        $status           = in_array( $requested_status, $allowed_statuses, true ) ? $requested_status : 'Valid'; 
+
+        if ( $ticket_id > 0 && ! empty( $name ) && ! empty( $phone ) ) { 
+            $ticket = $wpdb->get_row( $wpdb->prepare( "SELECT customer_id, ticket_code FROM {$t_tick} WHERE id = %d", $ticket_id ) ); 
+            if ( $ticket ) { 
+                $wpdb->update( $t_cust, array( 'name' => $name, 'phone' => $phone ), array( 'id' => $ticket->customer_id ), array( '%s', '%s' ), array( '%d' ) ); 
+                $wpdb->update( 
+                    $t_tick, 
+                    array( 
+                        'room_no' => $room_no, 
+                        'amount'  => $amount, 
+                        'status'  => $status, 
+                    ), 
+                    array( 'id' => $ticket_id ), 
+                    array( '%s', '%f', '%s' ), 
+                    array( '%d' ) 
+                ); 
+                ifs_pms_record_audit( 'edit_ticket', $ticket->ticket_code, "Updated status: {$status}, Amount: {$amount}" ); 
+            } 
+            wp_safe_redirect( add_query_arg( array( 'view' => 'tickets', 'msg' => 'ticket_updated', 'tab' => 'list' ), $base ) ); 
+            exit; 
+        } 
+    } 
+
+    // --- DELETE TICKET --- 
+    if ( 'delete_ticket' === $action ) { 
+        if ( ! current_user_can( 'manage_options' ) && ! current_user_can( 'ifs_manage_settings' ) ) { 
+            wp_die( esc_html__( 'Forbidden: Only managers can delete ticket records.', 'swimming-pool-manager' ), 403 ); 
+        } 
+
+        $ticket_id = isset( $_POST['ticket_id'] ) ? absint( wp_unslash( $_POST['ticket_id'] ) ) : 0; 
+        if ( $ticket_id > 0 ) { 
+            $ticket_code = $wpdb->get_var( $wpdb->prepare( "SELECT ticket_code FROM {$t_tick} WHERE id = %d", $ticket_id ) ); 
+            $wpdb->delete( $t_tick, array( 'id' => $ticket_id ), array( '%d' ) ); 
+            ifs_pms_record_audit( 'delete_ticket', $ticket_code, "Deleted ticket permanently" ); 
+            wp_safe_redirect( add_query_arg( array( 'view' => 'tickets', 'msg' => 'ticket_deleted', 'tab' => 'list' ), $base ) ); 
+            exit; 
+        } 
+    } 
+
+    // --- STAFF CRUD --- 
+    if ( 'create_staff' === $action ) { 
+        if ( ! current_user_can( 'manage_options' ) ) { 
+            wp_die( esc_html__( 'Forbidden: Administrator privileges required.', 'swimming-pool-manager' ), 403 ); 
+        } 
+
+        $username = isset( $_POST['user_login'] ) ? sanitize_user( wp_unslash( $_POST['user_login'] ) ) : ''; 
+        $email    = isset( $_POST['user_email'] ) ? sanitize_email( wp_unslash( $_POST['user_email'] ) ) : ''; 
+        $password = isset( $_POST['user_pass'] ) ? trim( (string) wp_unslash( $_POST['user_pass'] ) ) : ''; 
+        $fullname = isset( $_POST['display_name'] ) ? sanitize_text_field( wp_unslash( $_POST['display_name'] ) ) : ''; 
+
+        $requested_role = isset( $_POST['user_role'] ) ? sanitize_key( wp_unslash( $_POST['user_role'] ) ) : 'ifs_cashier'; 
+        $allowed_roles  = array( 'ifs_cashier', 'administrator' ); 
+        $role           = in_array( $requested_role, $allowed_roles, true ) ? $requested_role : 'ifs_cashier'; 
+
+        $base_sal = isset( $_POST['base_salary'] ) ? floatval( wp_unslash( $_POST['base_salary'] ) ) : 0.00; 
+        $allow    = isset( $_POST['allowance'] ) ? floatval( wp_unslash( $_POST['allowance'] ) ) : 0.00; 
+        $freq     = isset( $_POST['pay_frequency'] ) ? sanitize_text_field( wp_unslash( $_POST['pay_frequency'] ) ) : 'Monthly'; 
+        $eff_date = isset( $_POST['effective_date'] ) ? sanitize_text_field( wp_unslash( $_POST['effective_date'] ) ) : current_time( 'Y-m-d' ); 
+
+        if ( ! empty( $username ) && is_email( $email ) && ! empty( $password ) ) { 
+            $user_id = wp_create_user( $username, $password, $email ); 
+            if ( ! is_wp_error( $user_id ) ) { 
+                wp_update_user( array( 
+                    'ID'           => $user_id, 
+                    'display_name' => $fullname ? $fullname : $username, 
+                    'role'         => $role, 
+                ) ); 
+
+                $wpdb->insert( 
+                    $t_salary, 
+                    array( 
+                        'user_id'        => $user_id, 
+                        'base_salary'    => $base_sal, 
+                        'allowance'      => $allow, 
+                        'pay_frequency'  => $freq, 
+                        'effective_date' => $eff_date, 
+                        'status'         => 'Active', 
+                    ), 
+                    array( '%d', '%f', '%f', '%s', '%s', '%s' ) 
+                ); 
+
+                ifs_pms_record_audit( 'create_staff', $username, "Provisioned ID {$user_id} with role {$role}" ); 
+                wp_safe_redirect( add_query_arg( array( 'view' => 'staff', 'msg' => 'staff_created', 'tab' => 'list' ), $base ) ); 
+                exit; 
+            } 
+        } 
+        wp_safe_redirect( add_query_arg( array( 'view' => 'staff', 'msg' => 'error', 'tab' => 'add' ), $base ) ); 
+        exit; 
     } 
 
     // --- EXPENSES CRUD --- 
@@ -655,8 +709,29 @@ function ifs_pms_render_application() {
         $current_view = 'dashboard'; 
     } 
 
-    $b_name   = (string) get_option( 'ifs_pms_business_name', '' ); 
-    $logo_url = (string) get_option( 'ifs_pms_logo_url', '' ); 
+    $b_name       = (string) get_option( 'ifs_pms_business_name', '' ); 
+    $address      = (string) get_option( 'ifs_pms_address', '' ); 
+    $phone        = (string) get_option( 'ifs_pms_phone', '' ); 
+    $receipt_note = (string) get_option( 'ifs_pms_receipt_note', '' ); 
+    $logo_url     = (string) get_option( 'ifs_pms_logo_url', '' ); 
+
+    // Flash Messages Map
+    $msg_code  = isset( $_GET['msg'] ) ? sanitize_key( wp_unslash( $_GET['msg'] ) ) : ''; 
+    $flash_msg = ''; 
+    $flash_map = array( 
+        'ticket_created'      => __( 'Single Admission Pass Created Successfully.', 'swimming-pool-manager' ), 
+        'ticket_updated'      => __( 'Ticket Record Updated.', 'swimming-pool-manager' ), 
+        'ticket_deleted'      => __( 'Ticket Removed Permanently.', 'swimming-pool-manager' ), 
+        'customer_updated'    => __( 'Patron Profile Updated Successfully.', 'swimming-pool-manager' ), 
+        'membership_enrolled' => __( 'Member Subscription Record Synchronized.', 'swimming-pool-manager' ), 
+        'expense_logged'      => __( 'Operational Outflow Logged.', 'swimming-pool-manager' ), 
+        'staff_created'       => __( 'Operator Account & Compensation Provisioned.', 'swimming-pool-manager' ), 
+        'staff_updated'       => __( 'Operator Profile Updated.', 'swimming-pool-manager' ), 
+        'settings_saved'      => __( 'Master Configuration Saved.', 'swimming-pool-manager' ), 
+    ); 
+    if ( isset( $flash_map[ $msg_code ] ) ) { 
+        $flash_msg = $flash_map[ $msg_code ]; 
+    } 
     ?> 
 
     <div class="ifs-pms-shell" id="ifsPmsAppShell"> 
@@ -729,6 +804,11 @@ function ifs_pms_render_application() {
                 <ul class="ifs-pms-nav"> 
                     <li class="ifs-pms-nav-item <?php echo ( 'dashboard' === $current_view ) ? 'ifs-pms-active' : ''; ?>"> 
                         <a class="ifs-pms-nav-link" href="<?php echo esc_url( admin_url( 'admin.php?page=ifs-pms' ) ); ?>"> 
+                            <span class="dashicons dashicons-dashboard"></span> <?php esc_html_e( 'Overview', 'swimming-pool-manager' ); ?> 
+                        </a> 
+                    </li> 
+                    <li class="ifs-pms-nav-item <?php echo ( 'tickets' === $current_view ) ? 'ifs-pms-active' : ''; ?>"> 
+                        <a class="ifs-pms-nav-link" href="<?php echo esc_url( admin_url( 'admin.php?page=ifs-pms&view=tickets' ) ); ?>"> 
                             <span class="dashicons dashicons-cart"></span> <?php esc_html_e( 'Ticketing POS', 'swimming-pool-manager' ); ?> 
                         </a> 
                     </li> 
@@ -739,7 +819,7 @@ function ifs_pms_render_application() {
                     </li> 
                     <li class="ifs-pms-nav-item <?php echo ( 'live-status' === $current_view ) ? 'ifs-pms-active' : ''; ?>"> 
                         <a class="ifs-pms-nav-link" href="<?php echo esc_url( admin_url( 'admin.php?page=ifs-pms-live-status' ) ); ?>"> 
-                            <span class="dashicons dashicons-dashboard"></span> <?php esc_html_e( 'Floor Monitor', 'swimming-pool-manager' ); ?> 
+                            <span class="dashicons dashicons-groups"></span> <?php esc_html_e( 'Floor Monitor', 'swimming-pool-manager' ); ?> 
                         </a> 
                     </li> 
                     <li class="ifs-pms-nav-item <?php echo ( 'bookings' === $current_view ) ? 'ifs-pms-active' : ''; ?>"> 
@@ -754,7 +834,7 @@ function ifs_pms_render_application() {
                 <ul class="ifs-pms-nav"> 
                     <li class="ifs-pms-nav-item <?php echo ( 'customers' === $current_view ) ? 'ifs-pms-active' : ''; ?>"> 
                         <a class="ifs-pms-nav-link" href="<?php echo esc_url( admin_url( 'admin.php?page=ifs-pms-customers' ) ); ?>"> 
-                            <span class="dashicons dashicons-groups"></span> <?php esc_html_e( 'Guest Profiles', 'swimming-pool-manager' ); ?> 
+                            <span class="dashicons dashicons-admin-users"></span> <?php esc_html_e( 'Guest Profiles', 'swimming-pool-manager' ); ?> 
                         </a> 
                     </li> 
                     <li class="ifs-pms-nav-item <?php echo ( 'membership' === $current_view ) ? 'ifs-pms-active' : ''; ?>"> 
@@ -890,6 +970,12 @@ function ifs_pms_render_application() {
                 </div> 
             </header> 
 
+            <?php if ( ! empty( $flash_msg ) ) : ?> 
+                <div style="background: var(--ifs-success-soft, #ecfdf5); border: 1px solid rgba(16, 185, 129, 0.3); color: var(--ifs-success, #059669); padding: 12px 18px; border-radius: 8px; margin-bottom: 22px; font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 10px;"> 
+                    <?php echo wp_kses( ifs_pms_get_svg( 'check', '', 16 ), array( 'svg' => array( 'xmlns' => true, 'viewBox' => true, 'width' => true, 'height' => true, 'fill' => true ), 'path' => array( 'd' => true ) ) ); ?> <?php echo esc_html( $flash_msg ); ?> 
+                </div> 
+            <?php endif; ?> 
+
             <?php 
             $view_to_include = ( 'ticket_detail' === $current_view ) ? 'tickets' : $current_view; 
             $view_path       = IFS_PMS_PATH . 'views/' . $view_to_include . '.php'; 
@@ -903,6 +989,37 @@ function ifs_pms_render_application() {
         </main> 
 
         <div class="ifs-pms-sidebar-backdrop" id="ifsPmsSidebarBackdrop" onclick="ifsPmsToggleMobileMenu(false);"></div>
+    </div> 
+
+    <!-- Global Thermal Receipt Modal --> 
+    <div id="ifs-pms-thermal-modal"> 
+        <div class="ifs-pms-receipt-card"> 
+            <?php if ( ! empty( $logo_url ) ) : ?> 
+                <div style="display: flex; justify-content: center; margin-bottom: 8px;"> 
+                    <img src="<?php echo esc_url( $logo_url ); ?>" alt="Logo" style="max-height: 36px; width: auto;"> 
+                </div> 
+            <?php endif; ?> 
+            <h2 style="margin: 0; font-size: 16px; font-weight: 800; text-align: center;"><?php echo esc_html( $b_name ? $b_name : 'IFS Swimming Pool' ); ?></h2> 
+            <p style="margin: 4px 0 0 0; font-size: 11px; color: #475569; text-align: center;"> 
+                <?php echo esc_html( $address ); ?><br> 
+                <?php if ( ! empty( $phone ) ) : ?> 
+                    <?php echo esc_html__( 'Tel:', 'swimming-pool-manager' ) . ' ' . esc_html( $phone ); ?> 
+                <?php endif; ?> 
+            </p> 
+            <div class="ifs-pms-dashed-sep"></div> 
+            <div id="ifs-pms-thermal-qr" style="display: flex; justify-content: center; margin: 12px 0;"></div> 
+            <div id="ifs-pms-slip-code" style="font-size: 16px; font-weight: 800; letter-spacing: 1.5px; text-align: center;"></div> 
+            <div class="ifs-pms-dashed-sep"></div> 
+            <div id="ifs-pms-slip-meta" style="font-size: 11.5px; line-height: 1.6; text-align: left;"></div> 
+            <div class="ifs-pms-dashed-sep"></div> 
+            <?php if ( ! empty( $receipt_note ) ) : ?> 
+                <p style="font-size: 9.5px; color: #64748b; margin: 0; text-align: center;"><?php echo esc_html( $receipt_note ); ?></p> 
+            <?php endif; ?> 
+            <div class="no-print" style="margin-top: 16px; display: flex; gap: 8px;"> 
+                <button onclick="window.print()" class="ifs-pms-btn ifs-pms-btn-primary" style="flex: 1;"><?php echo wp_kses( ifs_pms_get_svg( 'print', '', 14 ), array( 'svg' => array( 'xmlns' => true, 'viewBox' => true, 'width' => true, 'height' => true, 'fill' => true ), 'path' => array( 'd' => true ) ) ); ?> <?php esc_html_e( 'Print', 'swimming-pool-manager' ); ?></button> 
+                <button onclick="if(window.ifsPms && window.ifsPms.closeReceipt){ window.ifsPms.closeReceipt(); }" class="ifs-pms-btn ifs-pms-btn-secondary" style="flex: 1;"><?php esc_html_e( 'Close', 'swimming-pool-manager' ); ?></button> 
+            </div> 
+        </div> 
     </div> 
 
     <script>
@@ -971,7 +1088,60 @@ function ifs_pms_verify_pass_callback() {
 } 
 
 /** 
- * 8. Clean Login Flow 
+ * 8. Secure CSV Exporter Callback (Managers & Cashiers) 
+ */ 
+add_action( 'wp_ajax_ifs_pms_export_csv_action', 'ifs_pms_export_csv_action_callback' ); 
+
+function ifs_pms_export_csv_action_callback() { 
+    check_ajax_referer( 'ifs_pms_security_token', 'security' ); 
+
+    if ( ! current_user_can( 'ifs_view_finances' ) && ! current_user_can( 'manage_options' ) ) { 
+        wp_die( esc_html__( 'Unauthorized access.', 'swimming-pool-manager' ), 403 ); 
+    } 
+
+    global $wpdb; 
+    $t_tick = '`' . esc_sql( $wpdb->prefix . 'ifs_pms_tickets' ) . '`'; 
+    $t_cust = '`' . esc_sql( $wpdb->prefix . 'ifs_pms_customers' ) . '`'; 
+
+    $tickets =$wpdb->get_results( 
+        "SELECT t.ticket_code, c.name as customer_name, c.phone as customer_phone, t.guest_type, t.package_details, t.duration_hours, t.payment_method, t.room_no, t.amount, t.sold_by, t.status, t.sold_at, t.scanned_at, t.scanned_by 
+        FROM {$t_tick} t 
+        LEFT JOIN {$t_cust} c ON t.customer_id = c.id 
+        ORDER BY t.id DESC", 
+        ARRAY_A 
+    ); 
+
+    nocache_headers(); 
+    header( 'Content-Type: text/csv; charset=utf-8' ); 
+    header( 'Content-Disposition: attachment; filename=ifs_pool_ledger_' . gmdate( 'Y-m-d' ) . '.csv' ); 
+
+    $output = fopen( 'php://output', 'w' ); 
+    if ( false !== $output ) { 
+        fputcsv( $output, array( 'Ticket Code', 'Patron Name', 'Phone', 'Guest Type', 'Packages Enrolled', 'Hours', 'Payment Method', 'Room Number', 'Amount', 'Sold By', 'Status', 'Sold At', 'Scanned At', 'Scanned By' ) ); 
+
+        if ( ! empty( $tickets ) ) { 
+            foreach ( $tickets as$row ) { 
+                fputcsv( 
+                    $output, 
+                    array( 
+                        $row['ticket_code'],$row['customer_name'], 
+                        $row['customer_phone'],$row['guest_type'], 
+                        $row['package_details'],$row['duration_hours'], 
+                        $row['payment_method'],$row['room_no'], 
+                        $row['amount'],$row['sold_by'], 
+                        $row['status'],$row['sold_at'], 
+                        $row['scanned_at'],$row['scanned_by'], 
+                    ) 
+                ); 
+            } 
+        } 
+        fclose( $output ); 
+    } 
+    exit; 
+} 
+
+/** 
+ * 9. Clean Login Flow 
  */ 
 add_filter( 'login_redirect', 'ifs_pms_login_redirect_dashboard', 10, 3 ); 
 
